@@ -7,3 +7,4 @@ transformers
 mlflow
 datasets
 hydra-core
+sentence-transformers
