@@ -1,0 +1,23 @@
+# Configuration for generating hate speech examples and logging with MLflow
+
+input:
+  pretrained_path_or_model: "BenjaminOcampo/task-implicit_task__model-hatebert__aug_method-all"  # e.g., 'bert-base-uncased'
+  train_file: "../data/ishate_train.csv"  # Path to the training data CSV file
+  lexicon_file: "../data/ishate_lex.csv"  # Path to a lexicon CSV file if required
+  protected_groups: ["MUSLIMS", "MIGRANTS", "JEWS", "BLACK PEOPLE", "WOMEN", "WHITE PEOPLE", "ASIAN"]  # List of protected groups
+  nof_shots: 5  # Number of examples to use as a prompt
+  engine: "text-curie-001"  # Endpoint for the generation model
+  secret_key: ???  # Secret key for accessing the model endpoint
+  min_length_sent: 5  # Minimum length of generated sentences
+  nof_gens: 100  # Number of generations to perform
+  end_token: "\n"  # Token that denotes the end of text
+  weights: [0.5, 0.5, 0.5, 0.5]  # Generation constraints
+  num_beams: 10  # Number of beams for beam search
+  max_length: 64  # Maximum length of the generated text
+  length_penalty: 1.0  # Length penalty for the generation
+  prompt_template: "These are some hate speech examples against {group}. Write one more alike example.\\n- {examples}\\n-"  # Template for prompt
+  sentence_sim: "sentence-transformers/all-MiniLM-L6-v2"  # Pretrained model for sentence similarity
+  uri_path: null  # MLflow tracking URI
+  experiment_name: "HateSpeechGenerationExperiment"  # Name of the MLflow experiment
+  run_name: "Run-001"  # Name of the MLflow run
+  experiment_description: "Generation of hate speech examples for analysis and study"  # Description for the MLflow experiment
