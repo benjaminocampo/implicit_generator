@@ -46,14 +46,16 @@ import pandas as pd
 train = pd.read_parquet("./data/ishate_train.csv")
 dev = pd.read_parquet("./data/ishate_train.csv")
 test = pd.read_parquet("./data/ishate_train.csv")
+```
 
-Alongside the ISHate dataset, we have also compiled a lexicon tailored for this dataset named `ishate_lexicon.csv`, which resides in the `./data/` directory. This lexicon can be used to better understand the data and potentially enhance the model's performance.
+Alongside the ISHate dataset, we have also compiled a lexicon tailored for this
+dataset named `ishate_lexicon.csv`, which resides in the `./data/` directory.
+This lexicon can be used to better understand the data and weight generation.
 
 Here's how to load it with `pandas`:
 
 ```python
 lexicon = pd.read_csv("./data/ishate_lexicon.csv")
-
 ```
 
 # Experiments
