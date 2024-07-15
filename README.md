@@ -13,25 +13,18 @@ Implicit Hate Speech Detection" accepted at Findings of ACL 2023.
 
 # Installation
 
-First, make sure that `conda` is installed on your machine. You can check if it
-is installed by running `conda --version` in your terminal.
-
 Clone the repository that contains of this project onto your local machine.
 
-Once conda is installed, navigate to the directory where the application is
-located in the terminal.
+Navigate to the directory where the application is located in the terminal.
 
-Run the command `make create_environment` to create a new conda environment for
-your application.
+Run the command `make create_environment` to create a new python environment for
+your application. Then activate it.
 
 Then, run the command `make requirements` to install the necessary dependencies
 for your application in the newly created environment.
 
 Optionally, you can test the environment by running the command `make
-test_environment`
-
-Once the environment is created and the dependencies are installed, you should
-be able to run the experiments.
+test_environment`.
 
 # Dataset
 
