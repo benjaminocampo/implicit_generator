@@ -12,8 +12,8 @@ DEVICE = 'cpu'  # Assuming CPU, change to 'cuda' if GPU is used
 
 
 # Helper function to sanitize prompts
-def sanitize_prompt(prompt):
-    return [p.replace("'", "").replace('"', "") for p in prompt]
+def sanitize_prompt(prompts):
+    return [prompt.replace("'", "").replace('"', "") for prompt in prompts]
 
 
 # Helper function to construct headers for the API request
@@ -25,15 +25,12 @@ def construct_headers(secret_key):
 
 
 # Language model querying function
-def query_language_model(prompt,
+def query_language_model(prompts,
                          secret_key,
                          model_endpoint,
                          topk=1,
                          max_tokens=1):
-    if not isinstance(prompt, list):
-        prompt = [prompt]
-
-    sanitized_prompts = sanitize_prompt(prompt)
+    sanitized_prompts = sanitize_prompt(prompts)
     payload = {
         "prompt": sanitized_prompts,
         "max_tokens": max_tokens,
@@ -186,7 +183,6 @@ def generate_imp_hs(prompt,
     generated_hyps = [BeamHypotheses(num_beams, max_length, length_penalty, early_stopping=False)]
     beam_scores = torch.zeros((1, num_beams), dtype=torch.float, device=DEVICE)
     beam_scores[:, 1:] = float('-inf')  # Ensure only tokens from the first beam are considered
-    beam_scores = beam_scores.view(-1)
 
     # Preparing for the beam search
     done = [False]
@@ -197,13 +193,16 @@ def generate_imp_hs(prompt,
     pad_token_id = '<|pad|>'
     eos_token_ids = [end_token]
 
-    outputs = query_language_model(prompt, secret_key, model_endpoint, topk=num_beams)
+    #import pdb; pdb.set_trace()
+    outputs = query_language_model(input_ids, secret_key, model_endpoint, topk=num_beams)
     outputs = outputs['choices'][0]['logprobs']['top_logprobs'][0]
 
     for i, (token, score) in enumerate(outputs.items()):
-        beam_scores[i] = score
+        beam_scores[0][i] = score
         input_ids[i] += token
 
+    beam_scores = beam_scores.view(-1)    
+    
     while step < max_length:
         # Query the language model with the given parameters.
         outputs = query_language_model(input_ids, secret_key, model_endpoint, topk=vocab_size)
@@ -225,22 +224,19 @@ def generate_imp_hs(prompt,
         scores_tensor = torch.tensor(scores).view(num_beams, -1)
 
         # Compute the next scores by adding beam scores and reshape as needed.
-        next_scores = scores_tensor + beam_scores[:, None].expand_as(scores_tensor)
-        #next_scores = next_scores.view(-1, vocab_size)
-        next_scores = next_scores.view(1, num_beams * vocab_size)
+        next_scores = scores_tensor + beam_scores.unsqueeze(1)
+        next_scores = next_scores.view(-1, vocab_size)
 
         # Select the top-k scores and tokens using torch.topk.
         next_scores, next_tokens = torch.topk(next_scores, 2 * num_beams, dim=1, largest=True, sorted=True)
+        next_scores = next_scores.view(-1)
+        next_tokens = next_tokens.view(-1)
 
         # next_tokens is a tensor with shape [1, num_beams * 2] resulting from the torch.topk call
         # and full_names is a flattened list of all token names.
 
         # Use PyTorch's ability to index using a tensor to extract token names for the next tokens.
-        next_tokens_names = [full_names[token_index] for token_index in next_tokens.view(-1).tolist()]
-
-        # Assert that the last dimension of next_scores matches the length of next_tokens_names
-        # and that it is also equal to 2 * num_beams.
-        assert next_scores.size(-1) == len(next_tokens_names) == 2 * num_beams
+        next_tokens_names = [full_names[token_index] for token_index in next_tokens.tolist()]
 
         # Build the list of logits using list comprehension and look-up in the precomputed log_dict_lexicon.
         logits_lex = [log_dict_lexicon.get(w.strip(), 0.0) for w in next_tokens_names]
@@ -264,17 +260,17 @@ def generate_imp_hs(prompt,
         logits_sim = torch.log(cos_sim).view(-1)  # Flatten the tensor to a 1D tensor if needed.
 
         # Run the classifier on all input texts at once using batch processing.
-        classifier_outputs = classifier(input_sentences, top_k=None)
+        classifier_outputs = classifier(input_sentences, return_all_scores=True)
 
         # Extracting logits for the specified class (here index 2 is used as a placeholder).
-        #logits_clf = torch.log(1 - torch.nn.functional.softmax(torch.tensor([output[2]['score'] for output in classifier_outputs]), dim=0))
-        logits_clf = torch.log(1 - torch.tensor([output[2]['score'] for output in classifier_outputs]))
+        logits_clf = torch.log(1 - torch.nn.functional.softmax(torch.tensor([output[2]["score"] for output in classifier_outputs]), dim=0))
 
         # Perform the weighted sum of the scores on the device to prevent unnecessary data transfer.
-        next_scores = (next_scores * weights[0] +
+        next_scores = (next_scores * weights[0] + 
                        logits_clf * weights[1] +
-                       logits_lex * weights[2] +
+                       logits_lex * weights[2] + 
                        logits_sim * weights[3])
+
 
         # next batch beam content
         # list of (batch_size * num_beams) tuple(next hypothesis score, next word, current position in the batch)
@@ -285,68 +281,86 @@ def generate_imp_hs(prompt,
         # Check the preconditions for eos_token_ids and pad_token_id
         assert eos_token_ids is not None and pad_token_id is not None, "eos_token_id and pad_token have to be defined"
 
-        # Initialize next_batch_beam with padding if the corresponding batch is done
-        next_batch_beam = [[(0, pad_token_id, 0)] * num_beams
-                           for batch_idx in range(1) if done[batch_idx]]
-
-        # Iterate over the batches that are not done
+        next_batch_beam = []
+        
+        # for each sentence
         for batch_idx in range(1):
-            if not done[batch_idx]:
-                # Get the effective beam and token IDs
-                beam_ids = torch.div(next_tokens[batch_idx], vocab_size, rounding_mode="trunc")
-                token_ids = [full_names[idx] for idx in next_tokens[batch_idx]]
+            # if we are done with this sentence
+            done[batch_idx] = done[batch_idx] or generated_hyps[batch_idx].is_done(
+                next_scores[batch_idx].max().item()
+            )
+            if done[batch_idx]:
+                assert (
+                    len(generated_hyps[batch_idx]) >= num_beams
+                ), "Batch can only be done if at least {} beams have been generated".format(num_beams)
+                assert (
+                    eos_token_ids is not None and pad_token_id is not None
+                ), "generated beams >= num_beams -> eos_token_id and pad_token have to be defined"
+                next_batch_beam.extend([(0, pad_token_id, 0)] * num_beams)  # pad the batch
+                continue
 
-                # Check eos tokens and update hypotheses or next beam content
-                next_sent_beam = []
-                for beam_id, token_id, score in zip(beam_ids, token_ids, next_scores[batch_idx]):
-                    effective_beam_id = batch_idx * num_beams + beam_id
-                    if token_id in eos_token_ids:
-                        generated_hyps[batch_idx].add(input_ids[effective_beam_id], score.item())
-                    else:
-                        next_sent_beam.append((score, token_id, effective_beam_id))
+            # next sentence beam content
+            next_sent_beam = []
 
-                    if len(next_sent_beam) == num_beams:
-                        break
+            # next tokens for this sentence
+            # check_ = [next_tokens[batch_idx][i] // vocab_size for i in range(len(next_tokens[batch_idx]))]
+            # check_ = [torch.div(i, vocab_size, rounding_mode="trunc") for i in next_tokens[batch_idx]]
+            for idx, score in zip(next_tokens, next_scores):
+                # get beam and word IDs
+                # beam_id = idx // vocab_size
+                beam_id = torch.div(idx, vocab_size, rounding_mode="trunc")
+                token_id = full_names[idx]
+                effective_beam_id = batch_idx * num_beams + beam_id
+                # add to generated hypotheses if end of sentence
+                if eos_token_ids is not None and token_id in eos_token_ids:
+                    generated_hyps[batch_idx].add(
+                        input_ids[effective_beam_id], score.item(),
+                    )
+                else:
+                    # add next predicted word if it is not eos_token
+                    next_sent_beam.append((score, token_id, effective_beam_id))
 
-                # Ensure the beam is full and update next_batch_beam
-                assert len(next_sent_beam) == num_beams, "Beam should always be full"
-                next_batch_beam.extend(next_sent_beam)
+                # the beam for next step is full
+                if len(next_sent_beam) == num_beams:
+                    break
+
+            # update next beam content
+            assert len(next_sent_beam) == num_beams, "Beam should always be full"
+            next_batch_beam.extend(next_sent_beam)
+            assert len(next_batch_beam) == num_beams * (batch_idx + 1)
 
         # sanity check / prepare next batch
-        assert len(next_batch_beam) == num_beams, "There should be exactly num_beams items in next_batch_beam"
-
-        beam_scores = beam_scores.new([x[0] for x in next_batch_beam])  # Assuming the scores are the first element
-        beam_tokens = [x[1] for x in next_batch_beam] # Tokens are the second element
-        beam_idx = [x[2] for x in next_batch_beam] # Indices are the third element
+        assert len(next_batch_beam) == 1 * num_beams
+        beam_scores = beam_scores.new([x[0] for x in next_batch_beam])
+        beam_tokens = [x[1] for x in next_batch_beam]
+        beam_idx = [x[2] for x in next_batch_beam]
         # re-order batch
         input_ids = [input_ids[i] for i in beam_idx]
         input_ids = [input_ids[i] + beam_tokens[i] for i in range(len(input_ids))]
 
-        # Break if all done
+        # stop when we are done with each sentence
         if all(done):
             break
 
-        # Increment step
-        step += 1
+        # update current length
+        step = step + 1
 
-    # finalize all open beam hypotheses and add to generated hypotheses
-    for batch_idx, is_done in enumerate(done):
-        if is_done:
+    # finalize all open beam hypotheses and end to generated hypotheses
+    for batch_idx in range(1):
+        if done[batch_idx]:
             continue
 
-        # Gather all final scores and tokens for the current batch
-        effective_beam_ids = torch.arange(num_beams) + batch_idx * num_beams
-        final_scores = beam_scores[effective_beam_ids].tolist()
-        final_tokens_list = [input_ids[idx] for idx in effective_beam_ids]
+        # add best num_beams hypotheses to generated hyps
+        for beam_id in range(num_beams):
+            effective_beam_id = batch_idx * num_beams + beam_id
+            final_score = beam_scores[effective_beam_id].item()
+            final_tokens = input_ids[effective_beam_id]
+            generated_hyps[batch_idx].add(final_tokens, final_score)
+    # depending on whether greedy generation is wanted or not define different output_batch_size and output_num_return_sequences_per_batch
 
-        # Add best num_beams hypotheses to generated hyps for current batch
-        for tokens, score in zip(final_tokens_list, final_scores):
-            generated_hyps[batch_idx].add(tokens, score)
+    best_all = []
+    # retrieve best hypotheses
+    for i, hypotheses in enumerate(generated_hyps):
+        best_all.append(sorted(hypotheses.beams, key=lambda x: x[0],reverse=True))
+    return [p[-1] for p in best_all[0]]
 
-    # Retrieve all best hypotheses
-    best_all = [sorted(hyps.beams, key=lambda x: x[0], reverse=True) for hyps in generated_hyps]
-
-    # Extract the best hypothesis for each batch
-    best_hypotheses = [hyps[-1] for hyps in best_all[0]]  # Assuming the hypotheses are tuples with (score, tokens)
-
-    return best_hypotheses

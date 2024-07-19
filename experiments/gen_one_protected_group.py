@@ -90,8 +90,8 @@ def run_experiment(cfg: DictConfig, run: mlflow.ActiveRun):
                                        max_length=cfg.input.max_length,
                                        length_penalty=cfg.input.length_penalty)
 
-            for r in response:
-                r = r[0][(len(prompt) + 1):].strip().replace("\\n", "")
+            for res in response:
+                r = res[(len(prompt) + 1):].strip().replace("\\n", "")
                 print(f"response: {r}\n")
                 print(f"gen_id: {nof_gens}\n")
                 adv_gens.append(r)
@@ -100,6 +100,7 @@ def run_experiment(cfg: DictConfig, run: mlflow.ActiveRun):
 
                 if len(r.split()) >= cfg.input.min_length_sent:
                     nof_gens += 1
+
 
         # Save generated data to a CSV file
         df_gens = pd.DataFrame({
